@@ -1,0 +1,13 @@
+services:
+  scraper:
+    build: .
+    container_name: sansad-scraper
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: on-failure
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=production
