@@ -1,13 +1,24 @@
 services:
-  scraper:
+  backend:
     build: .
-    container_name: sansad-scraper
+    container_name: netamap-backend
     dns:
       - 8.8.8.8
       - 1.1.1.1
-    restart: on-failure
     volumes:
       - .:/app
       - /app/node_modules
-    environment:
-      - NODE_ENV=production
+    ports:
+      - "5000:5000"
+    command: node server.js
+
+  frontend:
+    build: ./frontend
+    container_name: netamap-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend

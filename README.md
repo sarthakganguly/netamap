@@ -1,64 +1,64 @@
-# NetaMap - Sansad Scraper
+# NetaMap - Sansad Scraper & Search
 
-NetaMap is a specialized tool designed to crawl, scrape, and structure data from the official Indian Parliament portal ([sansad.in](https://sansad.in)). It extracts comprehensive biographical, political, and contact information for Lok Sabha members and stores it in a self-contained SQLite database.
+NetaMap is a full-stack, mobile-responsive application designed to crawl, structure, and visualize data from the official Indian Parliament portal ([sansad.in](https://sansad.in)). It provides a premium search experience with local data persistence.
 
 ## 🚀 Features
 
-- **Deep Member Profiles**: Extracts 50+ data points for all 543 Lok Sabha members (Bio, Education, Profession, Contact, etc.).
-- **Image Extraction**: Automatically downloads and stores member profile photos as **Base64** strings directly in the database.
-- **Party Representation**: Syncs current seat counts for all political parties in the 18th Lok Sabha.
-- **Parliamentary Glossary**: Extracts and structures the official glossary of parliamentary terms.
-- **Dockerized Environment**: Fully isolated execution environment to ensure host system integrity.
-- **Gemini CLI Skill**: Includes a specialized agent skill (`sansad-scraper-skill`) for programmatic understanding of the data schema and API.
+- **Deep Member Profiles**: Exhaustive biographical, political, and contact data for all 543 Lok Sabha members.
+- **Local Image Storage**: Downloads and stores profile photos as **Base64** strings in SQLite, eliminating external fetches and privacy/CORS concerns.
+- **Premium UI/UX**: Modern "Plus Jakarta Sans" typography, glassmorphism, and smooth animations.
+- **Dual Themes**: Toggle between a sophisticated Light Mode and a deep Charcoal/Indigo Dark Mode.
+- **Isolated Stack**: Fully containerized using Docker Compose for a zero-pollution host environment.
+- **Real-Time Search**: High-performance, debounced search by name or constituency.
 
 ## 🛠️ Technology Stack
 
-- **Runtime**: Node.js 20
-- **Database**: SQLite3
-- **Containerization**: Docker & Docker Compose
-- **Agent Skill**: Gemini CLI Skill Framework
-
-## 📋 Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose](https://docs.docker.com/compose/install/)
+- **Backend**: Node.js, Express, SQLite3
+- **Frontend**: React (TypeScript), Vite, Vanilla CSS
+- **Orchestration**: Docker, Docker Compose
 
 ## 🚦 Getting Started
 
-### 1. Build and Run the Scraper
-Run the full sync to fetch all data and populate the local database:
+### 1. Prerequisites
+- [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/)
+
+### 2. Configuration
+Create a `.env` file in the `frontend/` directory to point to your server's IP:
 
 ```bash
-docker-compose up --build
+# frontend/.env
+VITE_API_URL=http://<YOUR_SERVER_IP>:5000
 ```
 
-This will:
-1. Initialize the `sansad.db` SQLite database.
-2. Fetch the aggregate party statistics.
-3. Fetch the full glossary of parliamentary terms.
-4. Iterate through all 540+ members, fetching their full profiles and images.
-
-### 2. Access the Data
-The data is stored in `sansad.db` in the root directory. You can query it using any SQLite client or via Docker:
+### 3. Build and Start
+Run the following command to build and launch the services:
 
 ```bash
-# Example: Query a member profile via Docker
-docker run --rm -v $(pwd):/app -w /app node:20-bookworm-slim node -e "const sqlite3 = require('sqlite3'); const db = new sqlite3.Database('sansad.db'); db.get('SELECT fullName, constituency, partySname FROM members LIMIT 1', (err, row) => console.log(row));"
+docker-compose up --build -d
 ```
+
+### 4. Sync Data
+The scraper must be run once inside the container to populate your local database:
+
+```bash
+docker-compose exec backend node scraper.js
+```
+
+### 5. Access
+Visit **[http://localhost:5173](http://localhost:5173)** on your host or **[http://<YOUR_SERVER_IP>:5173](http://<YOUR_SERVER_IP>:5173)** from your mobile device.
 
 ## 📂 Project Structure
 
-- `sansad-scraper-skill/`: Local Gemini CLI skill containing schemas and procedural logic.
-- `scraper.js`: Main application logic for API traversal and data normalization.
-- `database.js`: SQLite schema definition and initialization.
-- `sansad.db`: The generated SQLite database (created after first run).
-- `Dockerfile` & `docker-compose.yml`: Isolation and deployment configuration.
+- `sansad-scraper-skill/`: Agent skill for data extraction logic.
+- `frontend/`: React search application.
+- `server.js`: Express API backend.
+- `scraper.js`: Data sync and image encoding logic.
+- `database.js`: SQLite schema initialization.
+- `sansad.db`: Self-contained SQLite database.
 
 ## 📊 Data Schema Highlights
 
-- **Member Table**: `mpsno`, `fullName`, `gender`, `partyFname`, `constituency`, `stateName`, `dob`, `education`, `image` (Base64), `pan_number` (Custom Field), etc.
-- **Parties Table**: `partyFname`, `partySname`, `count`.
-- **Terms Table**: `title`, `description`, `letter`.
+- **Member Table**: Includes `fullName`, `constituency`, `partySname`, `image` (Base64), `education`, `email`, `permanentAddress`, and a custom `pan_number` field.
 
 ---
 *Note: This project is intended for educational and research purposes. Please respect the robots.txt and rate limits of the source portal.*

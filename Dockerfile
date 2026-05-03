@@ -18,5 +18,5 @@ RUN npm install --build-from-source --silent
 # Copy application code
 COPY . .
 
-# Run the database initialization and scraper
-CMD ["sh", "-c", "node database.js && node scraper.js"]
+# Run the server
+CMD ["node", "server.js"]
