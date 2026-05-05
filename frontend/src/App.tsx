@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import { Member } from './types/member';
+import type { Member } from './types/member';
 import { api } from './services/api';
 import { useDebounce } from './hooks/useDebounce';
 import { Header } from './components/Header';
