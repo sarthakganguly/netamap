@@ -7,6 +7,7 @@ const path = require('path');
 const db = require('../db/connection');
 const { createWorker } = require('tesseract.js');
 const { execSync } = require('child_process');
+const readline = require('readline');
 
 const DOWNLOAD_PATH = path.resolve(__dirname, '../../downloads');
 const TEMP_PATH = path.join(DOWNLOAD_PATH, 'temp_pages');
@@ -14,14 +15,14 @@ const TEMP_PATH = path.join(DOWNLOAD_PATH, 'temp_pages');
 if (!fs.existsSync(DOWNLOAD_PATH)) fs.mkdirSync(DOWNLOAD_PATH);
 if (!fs.existsSync(TEMP_PATH)) fs.mkdirSync(TEMP_PATH);
 
-const GLOBAL_LIMIT = 12;
+// Settings
+const MAX_OCR_CONCURRENCY = 4; 
 let totalScraped = 0;
 let totalParsed = 0;
 
 // Queue for OCR tasks
 const ocrQueue = [];
 let ocrProcessing = false;
-const MAX_OCR_CONCURRENCY = 2; // Adjust based on CPU
 
 // Initialize Tables
 db.serialize(() => {
@@ -85,16 +86,31 @@ db.serialize(() => {
   )`);
 });
 
-/**
- * Worker logic to process OCR tasks from the queue
- */
+async function promptUser(label, options) {
+  if (options.length === 0) return 'ALL';
+  
+  console.log(`\n--- Select ${label} ---`);
+  console.log('0) [Process ALL]');
+  options.forEach((opt, i) => console.log(`${i + 1}) ${opt.text}`));
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  
+  return new Promise(resolve => {
+    rl.question(`\nPick an option (0-${options.length}): `, (answer) => {
+      rl.close();
+      const idx = parseInt(answer);
+      if (idx === 0 || isNaN(idx)) resolve('ALL');
+      else resolve(options[idx - 1]);
+    });
+  });
+}
+
 async function processOcrQueue() {
   if (ocrProcessing) return;
   ocrProcessing = true;
 
   while (ocrQueue.length > 0) {
     const { pdfPath, candidateId, candidateName } = ocrQueue.shift();
-    console.log(`[OCR-START] Processing affidavit for: ${candidateName}`);
     
     try {
       const affidavit = await parseForm26(pdfPath);
@@ -110,9 +126,9 @@ async function processOcrQueue() {
         });
       });
 
-      fs.unlinkSync(pdfPath);
+      if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
       totalParsed++;
-      console.log(`[OCR-SUCCESS] Saved affidavit for: ${candidateName} (${totalParsed}/${totalScraped} total)`);
+      console.log(`[OCR-SUCCESS] Parsed & Saved: ${candidateName} (${totalParsed} total parsed)`);
     } catch (err) {
       console.error(`[OCR-ERROR] Failed for ${candidateName}: ${err.message}`);
     }
@@ -131,20 +147,17 @@ async function parseForm26(pdfPath) {
   if (!fs.existsSync(candidateTempDir)) fs.mkdirSync(candidateTempDir);
 
   try {
-    // pdftoppm: -r 300 for quality, redirecting stderr to dev/null to minimize noise
     execSync(`pdftoppm -jpeg -r 300 "${pdfPath}" "${candidateTempDir}/page" 2>/dev/null`);
-    
     const imageFiles = fs.readdirSync(candidateTempDir).filter(f => f.startsWith('page') && f.endsWith('.jpg')).sort();
-    const worker = await createWorker('eng');
+    
+    const worker = await createWorker('eng', 1, { logger: m => {} });
     let fullText = '';
-
     for (const img of imageFiles) {
       const imgPath = path.join(candidateTempDir, img);
       const { data: { text } } = await worker.recognize(imgPath);
       fullText += text + '\n';
       fs.unlinkSync(imgPath);
     }
-
     await worker.terminate();
     fs.rmdirSync(candidateTempDir);
 
@@ -223,7 +236,7 @@ async function getOptions(page, selector) {
     return await page.evaluate((sel) => {
       return Array.from(document.querySelectorAll(`${sel} option`))
         .map(o => ({ value: o.value, text: o.innerText.trim() }))
-        .filter(o => o.value !== "" && !o.innerText.includes('Select '));
+        .filter(o => o.value !== "" && !o.text.includes('Select '));
     }, selector);
   } catch (e) {
     return [];
@@ -248,44 +261,56 @@ async function run() {
   const client = await page.target().createCDPSession();
   await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOAD_PATH });
 
-  console.log(`[${new Date().toLocaleTimeString()}] Navigating to ECI Affidavit Portal...`);
+  console.log(`[${new Date().toLocaleTimeString()}] Navigating to ECI Portal...`);
   await page.goto('https://affidavit.eci.gov.in/candidate-affidavit', { waitUntil: 'networkidle2', timeout: 90000 });
 
-  const electionTypes = await getOptions(page, '#electionType');
-  
+  // Interactive Selection Flow
+  let targetType = 'ALL', targetElection = 'ALL', targetState = 'ALL', targetPhase = 'ALL', targetConst = 'ALL';
+
+  targetType = await promptUser('Election Type', await getOptions(page, '#electionType'));
+  if (targetType !== 'ALL') {
+    await selectAndWait(page, '#electionType', targetType.value);
+    targetElection = await promptUser('Election', await getOptions(page, '#election'));
+    if (targetElection !== 'ALL') {
+      await selectAndWait(page, '#election', targetElection.value);
+      targetState = await promptUser('State', await getOptions(page, '#states'));
+      if (targetState !== 'ALL') {
+        await selectAndWait(page, '#states', targetState.value);
+        targetPhase = await promptUser('Phase', await getOptions(page, '#phase'));
+        if (targetPhase !== 'ALL') {
+          await selectAndWait(page, '#phase', targetPhase.value);
+          targetConst = await promptUser('Constituency', await getOptions(page, '#constId'));
+        }
+      }
+    }
+  }
+
+  console.log(`\n[${new Date().toLocaleTimeString()}] Selection complete. Starting scrape process...`);
+
+  const electionTypes = targetType === 'ALL' ? await getOptions(page, '#electionType') : [targetType];
   for (const type of electionTypes) {
-    if (totalScraped >= GLOBAL_LIMIT) break;
     await selectAndWait(page, '#electionType', type.value);
-    
-    const elections = await getOptions(page, '#election');
+    const elections = targetElection === 'ALL' ? await getOptions(page, '#election') : [targetElection];
     for (const election of elections) {
-      if (totalScraped >= GLOBAL_LIMIT) break;
       await selectAndWait(page, '#election', election.value);
-      
-      const states = await getOptions(page, '#states');
+      const states = targetState === 'ALL' ? await getOptions(page, '#states') : [targetState];
       for (const state of states) {
-        if (totalScraped >= GLOBAL_LIMIT) break;
         await selectAndWait(page, '#states', state.value);
-        
-        const phases = await getOptions(page, '#phase');
+        const phases = targetPhase === 'ALL' ? await getOptions(page, '#phase') : [targetPhase];
         for (const phase of phases) {
-          if (totalScraped >= GLOBAL_LIMIT) break;
-          await selectAndWait(page, '#phase', phase.value);
-          
-          const constituencies = await getOptions(page, '#constId');
+          if (phase.value) await selectAndWait(page, '#phase', phase.value);
+          const constituencies = targetConst === 'ALL' ? await getOptions(page, '#constId') : [targetConst];
           for (const constId of constituencies) {
-            if (totalScraped >= GLOBAL_LIMIT) break;
-            await selectAndWait(page, '#constId', constId.value);
+            if (constId.value) await selectAndWait(page, '#constId', constId.value);
             
-            console.log(`[${new Date().toLocaleTimeString()}] Filtering: ${state.text} > ${constId.text}`);
-            
+            console.log(`\n[FILTER] ${state.text} > ${constId.text}`);
             await Promise.all([
               page.click('button[name="submitName"]'),
               page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {})
             ]);
 
             let hasNext = true;
-            while (hasNext && totalScraped < GLOBAL_LIMIT) {
+            while (hasNext) {
               const candidates = await page.evaluate(() => {
                 const links = Array.from(document.querySelectorAll('a')).filter(a => 
                   a.innerText.toLowerCase().includes('view more') || a.href.includes('candidate-profile')
@@ -297,15 +322,11 @@ async function run() {
               });
 
               for (const candidate of candidates) {
-                if (totalScraped >= GLOBAL_LIMIT) break;
-                
                 totalScraped++;
-                console.log(`[FETCH] Starting Candidate #${totalScraped}: ${candidate.name_brief}`);
-                
+                console.log(`[FETCH] Candidate #${totalScraped}: ${candidate.name_brief}`);
                 const detailPage = await browser.newPage();
                 try {
                   await detailPage.goto(candidate.profile_url, { waitUntil: 'networkidle2' });
-                  
                   const profileData = await detailPage.evaluate(() => {
                     const getVal = (label) => {
                       const row = Array.from(document.querySelectorAll('tr, .row, div')).find(r => r.innerText.includes(label));
@@ -322,58 +343,37 @@ async function run() {
                       img: document.querySelector('img[src*="photo"], .candidate-image img')?.src
                     };
                   });
-
                   const candidateId = await new Promise((resolve) => {
                     db.run(`INSERT INTO eci_candidates (state, assembly_constituency, party_name_en, current_status, name_en, age, address, profile_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, 
                     [profileData.state, profileData.constituency, profileData.party, profileData.status, profileData.name, profileData.age, profileData.address, profileData.img], 
                     function() { resolve(this.lastID); });
                   });
-
-                  // Download
                   const downloadLink = await detailPage.evaluateHandle(() => {
                     return Array.from(document.querySelectorAll('a, button')).find(el => 
                       el.innerText.toLowerCase().includes('download') || el.getAttribute('onclick')?.includes('increaseDownloadCount')
                     );
                   });
-                  
                   if (downloadLink && (await downloadLink.asElement())) {
-                    console.log(`[FETCH] Initiating download for: ${profileData.name}`);
                     await downloadLink.asElement().click();
-                    
                     let pdfFile = null;
                     for (let attempt = 0; attempt < 30; attempt++) {
                       await new Promise(r => setTimeout(r, 1000));
                       pdfFile = fs.readdirSync(DOWNLOAD_PATH).find(f => f.endsWith('.pdf'));
                       if (pdfFile) break;
                     }
-
                     if (pdfFile) {
-                      const oldPath = path.join(DOWNLOAD_PATH, pdfFile);
                       const newPath = path.join(DOWNLOAD_PATH, `affidavit_${candidateId}.pdf`);
-                      fs.renameSync(oldPath, newPath);
-                      
-                      // Push to OCR queue and process in background
+                      fs.renameSync(path.join(DOWNLOAD_PATH, pdfFile), newPath);
                       ocrQueue.push({ pdfPath: newPath, candidateId, candidateName: profileData.name });
-                      processOcrQueue(); // Don't await, let it run in parallel
+                      processOcrQueue();
                     }
                   }
-                } catch (e) {
-                  console.error(`[FETCH-ERROR] ${candidate.name_brief}: ${e.message}`);
-                } finally {
-                  await detailPage.close();
-                }
+                } catch (e) { console.error(`[FETCH-ERROR] ${candidate.name_brief}: ${e.message}`); }
+                finally { await detailPage.close(); }
               }
-
-              if (totalScraped < GLOBAL_LIMIT) {
-                const nextButton = await page.$('a.relative.inline-flex.items-center[href*="page="]');
-                if (nextButton) {
-                  await Promise.all([nextButton.click(), page.waitForNavigation({ waitUntil: 'networkidle2' })]);
-                } else {
-                  hasNext = false;
-                }
-              } else {
-                hasNext = false;
-              }
+              const nextButton = await page.$('a.relative.inline-flex.items-center[href*="page="]');
+              if (nextButton) { await Promise.all([nextButton.click(), page.waitForNavigation({ waitUntil: 'networkidle2' })]); }
+              else { hasNext = false; }
             }
           }
         }
@@ -381,15 +381,11 @@ async function run() {
     }
   }
 
-  // Wait for all OCR tasks to finish
-  console.log(`[FINISHING] Web fetch complete. Waiting for background OCR tasks...`);
-  while (ocrProcessing || ocrQueue.length > 0) {
-    await new Promise(r => setTimeout(r, 2000));
-  }
-
+  console.log(`[FINISHING] Web fetch complete. Finalizing background OCR tasks...`);
+  while (ocrProcessing || ocrQueue.length > 0) { await new Promise(r => setTimeout(r, 2000)); }
   await browser.close();
   db.close();
-  console.log(`\n[${new Date().toLocaleTimeString()}] --- ALL TASKS COMPLETE: ${totalParsed} processed ---`);
+  console.log(`\n[${new Date().toLocaleTimeString()}] --- SCRAPE COMPLETE: ${totalScraped} processed ---`);
 }
 
 run().catch(console.error);
