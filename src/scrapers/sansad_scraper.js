@@ -1,6 +1,5 @@
 const https = require('https');
-const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('sansad.db');
+const db = require('../db/connection');
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',

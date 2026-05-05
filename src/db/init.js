@@ -1,5 +1,4 @@
-const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('sansad.db');
+const db = require('./connection');
 
 db.serialize(() => {
   // 1. Parties Table

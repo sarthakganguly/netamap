@@ -13,7 +13,7 @@ The tool runs within the Docker environment to handle Puppeteer, Chromium, and O
 
 2. **Run the ECI Scraper:**
    ```bash
-   docker exec -it netamap-backend node eci_scraper.js
+   docker exec -it netamap-backend node src/scrapers/eci_scraper.js
    ```
 
 ## Technical Implementation

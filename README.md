@@ -35,10 +35,10 @@ Run the scrapers inside the container to populate your local database:
 
 ```bash
 # For Sansad (MPs)
-docker exec -it netamap-backend node scraper.js
+docker exec -it netamap-backend node src/scrapers/sansad_scraper.js
 
 # For ECI (Candidates)
-docker exec -it netamap-backend node eci_scraper.js
+docker exec -it netamap-backend node src/scrapers/eci_scraper.js
 ```
 
 ### 4. Access
@@ -46,9 +46,10 @@ Visit **[http://localhost:5173](http://localhost:5173)** on your host.
 
 ## 📂 Project Structure
 
-- `eci_scraper.js`: ECI candidate scrape and Form 26 PDF parser.
-- `scraper.js`: Sansad data sync logic.
-- `database.js`: SQLite schema initialization.
+- `src/scrapers/eci_scraper.js`: ECI candidate scrape and Form 26 PDF parser.
+- `src/scrapers/sansad_scraper.js`: Sansad data sync logic.
+- `src/api/server.js`: Express API backend.
+- `src/db/`: Database connection and initialization.
 - `schemas.md`: Consolidated data schemas for all extraction targets.
 - `ECI_SCRAPER.md`: Detailed documentation for the ECI tool.
 

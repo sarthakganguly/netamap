@@ -1,0 +1,62 @@
+export interface Member {
+  mpsno: number;
+  initial: string;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  gender: string;
+  partyFname: string;
+  partySname: string;
+  constituency: string;
+  stateName: string;
+  stateCode: string;
+  status: string;
+  lastLoksabha: number;
+  lsExpr: string;
+  noOfTerms: number;
+  age: number;
+  dob: string;
+  birthPlace: string;
+  fatherName: string;
+  motherName: string;
+  spouseName: string;
+  marriageDate: string;
+  maritalStatus: string;
+  numberOfSons: number;
+  numberOfDaughters: number;
+  qualification: string;
+  education: string;
+  mainProfession: string;
+  otherProfession: string;
+  email: string;
+  personalPhone: string;
+  delhiPhone: string;
+  presentAddress: string;
+  permanentAddress: string;
+  photoUrl: string;
+  image: string;
+  facebook: string;
+  twitter: string;
+  instagram: string;
+  booksPublished: string;
+  literary: string;
+  social: string;
+  interest: string;
+  hobbies: string;
+  sports: string;
+  countriesVisited: string;
+  otherInfo: string;
+  icNo: number;
+  pan_number: string;
+  updatedAt?: string;
+}
+
+export interface ECICandidate {
+  id: number;
+  name_en: string;
+  party_name_en: string;
+  state: string;
+  assembly_constituency: string;
+  current_status: string;
+  affidavit_data?: any;
+}

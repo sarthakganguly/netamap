@@ -43,4 +43,4 @@ RUN npm install --build-from-source --silent
 COPY . .
 
 # Run the server
-CMD ["node", "server.js"]
+CMD ["node", "src/api/server.js"]

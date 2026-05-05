@@ -10,7 +10,7 @@ services:
       - /app/node_modules
     ports:
       - "5000:5000"
-    command: node server.js
+    command: node src/api/server.js
 
   frontend:
     build: ./frontend
