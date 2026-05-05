@@ -5,32 +5,34 @@ NetaMap is a full-stack platform designed to crawl, structure, and visualize dat
 ## 🚀 Features
 
 - **Deep Member Profiles**: Exhaustive biographical, political, and contact data for all 543 Lok Sabha members.
-- **ECI Candidate Scraper**: (New) Scrapes candidate affidavits and profile metadata from the ECI portal.
-- **Form 26 OCR Parser**: (New) Advanced PDF parsing using Tesseract.js and Poppler (`pdftoppm`) to extract structured financial and legal data from scanned candidate affidavits.
+- **ECI Candidate Scraper**: Scrapes candidate affidavits and profile metadata from the ECI portal.
+- **Form 26 OCR Parser**: Advanced PDF parsing using Tesseract.js and Poppler (`pdftoppm`) to extract structured financial and legal data from scanned candidate affidavits.
 - **Local Image Storage**: Downloads and stores profile photos as **Base64** strings in SQLite, eliminating external fetches and privacy/CORS concerns.
-- **Premium UI/UX**: Modern typography, glassmorphism, and smooth animations.
-- **Isolated Stack**: Fully containerized using Docker Compose for a zero-pollution host environment.
+- **Unified Data Access**: A clean REST API to access both elected members and candidate data.
 
 ## 🛠️ Technology Stack
 
-- **Backend**: Node.js, Express, SQLite3
-- **Frontend**: React (TypeScript), Vite, Vanilla CSS
+- **Backend**: Node.js, Express, SQLite3 (Modular Architecture)
+- **Frontend**: React 19, TypeScript, Vite (Componentized Architecture)
 - **OCR/Automation**: Puppeteer (Stealth), Tesseract.js, Poppler
 - **Orchestration**: Docker, Docker Compose
 
+## 📚 Documentation
+
+- [**Data Schemas**](./docs/schemas.md): Detailed JSON schemas for all data entities.
+- [**ECI Scraper Guide**](./docs/eci-scraper.md): Technical details on the ECI scraping and OCR pipeline.
+- [**Sansad Scraper Guide**](./docs/sansad-scraper.md): Details on the Indian Parliament data extraction.
+
 ## 🚦 Getting Started
 
-### 1. Prerequisites
-- [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/)
-
-### 2. Build and Start
+### 1. Build and Start
 Run the following command to build and launch the services:
 
 ```bash
 docker-compose up --build -d
 ```
 
-### 3. Sync Data
+### 2. Sync Data
 Run the scrapers inside the container to populate your local database:
 
 ```bash
@@ -41,17 +43,9 @@ docker exec -it netamap-backend node src/scrapers/sansad_scraper.js
 docker exec -it netamap-backend node src/scrapers/eci_scraper.js
 ```
 
-### 4. Access
-Visit **[http://localhost:5173](http://localhost:5173)** on your host.
-
-## 📂 Project Structure
-
-- `src/scrapers/eci_scraper.js`: ECI candidate scrape and Form 26 PDF parser.
-- `src/scrapers/sansad_scraper.js`: Sansad data sync logic.
-- `src/api/server.js`: Express API backend.
-- `src/db/`: Database connection and initialization.
-- `schemas.md`: Consolidated data schemas for all extraction targets.
-- `ECI_SCRAPER.md`: Detailed documentation for the ECI tool.
+### 3. Access
+- **Frontend**: `http://localhost:5173`
+- **API (Candidates)**: `http://localhost:5000/api/eci/candidates`
 
 ---
 *Note: This project is intended for educational and research purposes. Please respect the robots.txt and rate limits of the source portals.*
