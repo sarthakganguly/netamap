@@ -9,10 +9,19 @@ const { createWorker } = require('tesseract.js');
 const { execSync } = require('child_process');
 
 const DOWNLOAD_PATH = path.resolve(__dirname, '../../downloads');
+const TEMP_PATH = path.join(DOWNLOAD_PATH, 'temp_pages');
 
-if (!fs.existsSync(DOWNLOAD_PATH)) {
-  fs.mkdirSync(DOWNLOAD_PATH);
-}
+if (!fs.existsSync(DOWNLOAD_PATH)) fs.mkdirSync(DOWNLOAD_PATH);
+if (!fs.existsSync(TEMP_PATH)) fs.mkdirSync(TEMP_PATH);
+
+const GLOBAL_LIMIT = 12;
+let totalScraped = 0;
+let totalParsed = 0;
+
+// Queue for OCR tasks
+const ocrQueue = [];
+let ocrProcessing = false;
+const MAX_OCR_CONCURRENCY = 2; // Adjust based on CPU
 
 // Initialize Tables
 db.serialize(() => {
@@ -76,34 +85,71 @@ db.serialize(() => {
   )`);
 });
 
+/**
+ * Worker logic to process OCR tasks from the queue
+ */
+async function processOcrQueue() {
+  if (ocrProcessing) return;
+  ocrProcessing = true;
+
+  while (ocrQueue.length > 0) {
+    const { pdfPath, candidateId, candidateName } = ocrQueue.shift();
+    console.log(`[OCR-START] Processing affidavit for: ${candidateName}`);
+    
+    try {
+      const affidavit = await parseForm26(pdfPath);
+      
+      await new Promise((resolve, reject) => {
+        db.run(`INSERT INTO eci_affidavits (candidate_id, date_of_filing, pan_number, pending_criminal_cases, convictions, movable_assets_total, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+          candidateId, affidavit.document_metadata?.date_of_filing, affidavit.candidate_details?.tax_details?.pan_number,
+          affidavit.legal_records?.pending_criminal_cases ? 1 : 0, affidavit.legal_records?.convictions ? 1 : 0,
+          affidavit.financial_declarations?.assets?.movable?.gross_total_value || 0, JSON.stringify(affidavit)
+        ], (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      fs.unlinkSync(pdfPath);
+      totalParsed++;
+      console.log(`[OCR-SUCCESS] Saved affidavit for: ${candidateName} (${totalParsed}/${totalScraped} total)`);
+    } catch (err) {
+      console.error(`[OCR-ERROR] Failed for ${candidateName}: ${err.message}`);
+    }
+  }
+
+  ocrProcessing = false;
+}
+
 function extractRegex(text, regex) {
   const match = text.match(regex);
   return match ? match[1].trim() : null;
 }
 
 async function parseForm26(pdfPath) {
-  console.log(`  [OCR] Converting PDF to images: ${path.basename(pdfPath)}`);
-  const tempDir = path.join(DOWNLOAD_PATH, 'temp_pages');
-  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+  const candidateTempDir = path.join(TEMP_PATH, path.basename(pdfPath, '.pdf'));
+  if (!fs.existsSync(candidateTempDir)) fs.mkdirSync(candidateTempDir);
 
   try {
-    execSync(`pdftoppm -jpeg -r 300 "${pdfPath}" "${tempDir}/page"`);
-    const imageFiles = fs.readdirSync(tempDir).filter(f => f.startsWith('page') && f.endsWith('.jpg')).sort();
+    // pdftoppm: -r 300 for quality, redirecting stderr to dev/null to minimize noise
+    execSync(`pdftoppm -jpeg -r 300 "${pdfPath}" "${candidateTempDir}/page" 2>/dev/null`);
     
+    const imageFiles = fs.readdirSync(candidateTempDir).filter(f => f.startsWith('page') && f.endsWith('.jpg')).sort();
     const worker = await createWorker('eng');
     let fullText = '';
+
     for (const img of imageFiles) {
-      const imgPath = path.join(tempDir, img);
+      const imgPath = path.join(candidateTempDir, img);
       const { data: { text } } = await worker.recognize(imgPath);
       fullText += text + '\n';
       fs.unlinkSync(imgPath);
     }
+
     await worker.terminate();
-    fs.rmdirSync(tempDir);
+    fs.rmdirSync(candidateTempDir);
 
     return mapTextToSchema(fullText);
   } catch (err) {
-    console.error(`  [OCR-ERROR] ${err.message}`);
     throw err;
   }
 }
@@ -171,9 +217,6 @@ function mapTextToSchema(text) {
   };
 }
 
-let totalScraped = 0;
-const GLOBAL_LIMIT = 12;
-
 async function getOptions(page, selector) {
   try {
     await page.waitForSelector(selector, { timeout: 10000 });
@@ -183,31 +226,14 @@ async function getOptions(page, selector) {
         .filter(o => o.value !== "" && !o.innerText.includes('Select '));
     }, selector);
   } catch (e) {
-    console.warn(`[${new Date().toLocaleTimeString()}] Dropdown ${selector} not found or empty. skipping.`);
     return [];
   }
 }
 
 async function selectAndWait(page, selector, value) {
   await page.waitForSelector(selector, { visible: true, timeout: 15000 });
-  console.log(`[${new Date().toLocaleTimeString()}] Selecting ${selector}: ${value}`);
   await page.select(selector, value);
-  await new Promise(r => setTimeout(r, 2000)); // Wait for AJAX population
-}
-
-async function scrapeCandidatesOnPage(page) {
-  return await page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll('a')).filter(a => 
-      a.innerText.toLowerCase().includes('view more') || a.href.includes('candidate-profile')
-    );
-    return links.map(a => {
-      const container = a.closest('tr, .card, .candidate-card');
-      return {
-        name_brief: container?.innerText.split('\n')[0].trim() || 'Candidate',
-        profile_url: a.href
-      };
-    }).filter((v, i, a) => a.findIndex(t => t.profile_url === v.profile_url) === i);
-  });
+  await new Promise(r => setTimeout(r, 2000));
 }
 
 async function run() {
@@ -251,104 +277,97 @@ async function run() {
             if (totalScraped >= GLOBAL_LIMIT) break;
             await selectAndWait(page, '#constId', constId.value);
             
-            console.log(`[${new Date().toLocaleTimeString()}] Filtering for: ${type.text} > ${election.text} > ${state.text} > ${phase.text} > ${constId.text}`);
+            console.log(`[${new Date().toLocaleTimeString()}] Filtering: ${state.text} > ${constId.text}`);
             
-            // Click Filter
             await Promise.all([
               page.click('button[name="submitName"]'),
               page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {})
             ]);
 
-            // Pagination Loop for this combination
             let hasNext = true;
             while (hasNext && totalScraped < GLOBAL_LIMIT) {
-              const candidates = await scrapeCandidatesOnPage(page);
-              console.log(`[${new Date().toLocaleTimeString()}] Found ${candidates.length} candidates on current page.`);
+              const candidates = await page.evaluate(() => {
+                const links = Array.from(document.querySelectorAll('a')).filter(a => 
+                  a.innerText.toLowerCase().includes('view more') || a.href.includes('candidate-profile')
+                );
+                return links.map(a => ({
+                  name_brief: a.closest('tr, .card, .candidate-card')?.innerText.split('\n')[0].trim() || 'Candidate',
+                  profile_url: a.href
+                })).filter((v, i, a) => a.findIndex(t => t.profile_url === v.profile_url) === i);
+              });
 
               for (const candidate of candidates) {
                 if (totalScraped >= GLOBAL_LIMIT) break;
                 
-                console.log(`\n--- Candidate #${totalScraped + 1}: ${candidate.name_brief} ---`);
-                await page.goto(candidate.profile_url, { waitUntil: 'networkidle2' });
-
-                const profileData = await page.evaluate(() => {
-                  const getVal = (label) => {
-                    const rows = Array.from(document.querySelectorAll('tr, .row, div'));
-                    const row = rows.find(r => r.innerText.includes(label));
-                    return row?.innerText.replace(label, '').replace(':', '').trim() || null;
-                  };
-                  return {
-                    state: getVal('State Name') || getVal('State'),
-                    constituency: getVal('Constituency Name') || getVal('Constituency'),
-                    party: getVal('Party Name') || getVal('Party'),
-                    status: getVal('Status'),
-                    name: document.querySelector('h3, h4, .candidate-name')?.innerText.trim(),
-                    age: parseInt(getVal('Age')) || null,
-                    address: getVal('Address'),
-                    img: document.querySelector('img[src*="photo"], .candidate-image img')?.src
-                  };
-                });
-
-                console.log(`[${new Date().toLocaleTimeString()}] Extracted Profile: ${profileData.name} (${profileData.party})`);
-
-                const candidateId = await new Promise((resolve) => {
-                  db.run(`INSERT INTO eci_candidates (
-                    state, assembly_constituency, party_name_en, current_status, 
-                    name_en, age, address, profile_image_url
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
-                    profileData.state, profileData.constituency, profileData.party, profileData.status,
-                    profileData.name, profileData.age, profileData.address, profileData.img
-                  ], function() { resolve(this.lastID); });
-                });
-
-                // Handle PDF Download
-                const downloadLink = await page.evaluateHandle(() => {
-                  const elements = Array.from(document.querySelectorAll('a, button'));
-                  return elements.find(el => el.innerText.toLowerCase().includes('download') || el.getAttribute('onclick')?.includes('increaseDownloadCount'));
-                });
-                
-                if (downloadLink && (await downloadLink.asElement())) {
-                  console.log(`[${new Date().toLocaleTimeString()}] Initiating PDF download...`);
-                  await downloadLink.asElement().click();
-                  
-                  let pdfFile = null;
-                  for (let attempt = 0; attempt < 30; attempt++) {
-                    await new Promise(r => setTimeout(r, 1000));
-                    const files = fs.readdirSync(DOWNLOAD_PATH);
-                    pdfFile = files.find(f => f.endsWith('.pdf'));
-                    if (pdfFile) break;
-                  }
-
-                  if (pdfFile) {
-                    console.log(`[${new Date().toLocaleTimeString()}] Download Complete. Parsing...`);
-                    const fullPath = path.join(DOWNLOAD_PATH, pdfFile);
-                    try {
-                      const affidavit = await parseForm26(fullPath);
-                      db.run(`INSERT INTO eci_affidavits (candidate_id, date_of_filing, pan_number, pending_criminal_cases, convictions, movable_assets_total, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
-                        candidateId, affidavit.document_metadata?.date_of_filing, affidavit.candidate_details?.tax_details?.pan_number,
-                        affidavit.legal_records?.pending_criminal_cases ? 1 : 0, affidavit.legal_records?.convictions ? 1 : 0,
-                        affidavit.financial_declarations?.assets?.movable?.gross_total_value || 0, JSON.stringify(affidavit)
-                      ]);
-                      fs.unlinkSync(fullPath);
-                      console.log(`[${new Date().toLocaleTimeString()}] Affidavit saved.`);
-                    } catch (e) { console.error(`[${new Date().toLocaleTimeString()}] Parsing Error: ${e.message}`); }
-                  }
-                }
                 totalScraped++;
-                // Go back to the filtered results list
-                await page.goBack({ waitUntil: 'networkidle2' });
+                console.log(`[FETCH] Starting Candidate #${totalScraped}: ${candidate.name_brief}`);
+                
+                const detailPage = await browser.newPage();
+                try {
+                  await detailPage.goto(candidate.profile_url, { waitUntil: 'networkidle2' });
+                  
+                  const profileData = await detailPage.evaluate(() => {
+                    const getVal = (label) => {
+                      const row = Array.from(document.querySelectorAll('tr, .row, div')).find(r => r.innerText.includes(label));
+                      return row?.innerText.replace(label, '').replace(':', '').trim() || null;
+                    };
+                    return {
+                      state: getVal('State Name') || getVal('State'),
+                      constituency: getVal('Constituency Name') || getVal('Constituency'),
+                      party: getVal('Party Name') || getVal('Party'),
+                      status: getVal('Status'),
+                      name: document.querySelector('h3, h4, .candidate-name')?.innerText.trim(),
+                      age: parseInt(getVal('Age')) || null,
+                      address: getVal('Address'),
+                      img: document.querySelector('img[src*="photo"], .candidate-image img')?.src
+                    };
+                  });
+
+                  const candidateId = await new Promise((resolve) => {
+                    db.run(`INSERT INTO eci_candidates (state, assembly_constituency, party_name_en, current_status, name_en, age, address, profile_image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, 
+                    [profileData.state, profileData.constituency, profileData.party, profileData.status, profileData.name, profileData.age, profileData.address, profileData.img], 
+                    function() { resolve(this.lastID); });
+                  });
+
+                  // Download
+                  const downloadLink = await detailPage.evaluateHandle(() => {
+                    return Array.from(document.querySelectorAll('a, button')).find(el => 
+                      el.innerText.toLowerCase().includes('download') || el.getAttribute('onclick')?.includes('increaseDownloadCount')
+                    );
+                  });
+                  
+                  if (downloadLink && (await downloadLink.asElement())) {
+                    console.log(`[FETCH] Initiating download for: ${profileData.name}`);
+                    await downloadLink.asElement().click();
+                    
+                    let pdfFile = null;
+                    for (let attempt = 0; attempt < 30; attempt++) {
+                      await new Promise(r => setTimeout(r, 1000));
+                      pdfFile = fs.readdirSync(DOWNLOAD_PATH).find(f => f.endsWith('.pdf'));
+                      if (pdfFile) break;
+                    }
+
+                    if (pdfFile) {
+                      const oldPath = path.join(DOWNLOAD_PATH, pdfFile);
+                      const newPath = path.join(DOWNLOAD_PATH, `affidavit_${candidateId}.pdf`);
+                      fs.renameSync(oldPath, newPath);
+                      
+                      // Push to OCR queue and process in background
+                      ocrQueue.push({ pdfPath: newPath, candidateId, candidateName: profileData.name });
+                      processOcrQueue(); // Don't await, let it run in parallel
+                    }
+                  }
+                } catch (e) {
+                  console.error(`[FETCH-ERROR] ${candidate.name_brief}: ${e.message}`);
+                } finally {
+                  await detailPage.close();
+                }
               }
 
-              // Check for Next button
               if (totalScraped < GLOBAL_LIMIT) {
                 const nextButton = await page.$('a.relative.inline-flex.items-center[href*="page="]');
-                const nextText = await page.evaluate(el => el?.innerText, nextButton);
-                if (nextButton && nextText.includes('Next')) {
-                  console.log(`[${new Date().toLocaleTimeString()}] Clicking Next button...`);
-                  await Promise.all([
-                    nextButton.click(),
-                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 })
-                  ]);
+                if (nextButton) {
+                  await Promise.all([nextButton.click(), page.waitForNavigation({ waitUntil: 'networkidle2' })]);
                 } else {
                   hasNext = false;
                 }
@@ -362,9 +381,15 @@ async function run() {
     }
   }
 
+  // Wait for all OCR tasks to finish
+  console.log(`[FINISHING] Web fetch complete. Waiting for background OCR tasks...`);
+  while (ocrProcessing || ocrQueue.length > 0) {
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
   await browser.close();
   db.close();
-  console.log(`\n[${new Date().toLocaleTimeString()}] --- SCRAPE COMPLETE: ${totalScraped} candidates processed ---`);
+  console.log(`\n[${new Date().toLocaleTimeString()}] --- ALL TASKS COMPLETE: ${totalParsed} processed ---`);
 }
 
 run().catch(console.error);
