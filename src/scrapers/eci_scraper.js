@@ -309,6 +309,18 @@ async function run() {
               page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {})
             ]);
 
+            // Click the "Accepted" status button
+            console.log(`[FILTER] Clicking "Accepted" status filter...`);
+            const acceptedButton = await page.$('button[value="6"]');
+            if (acceptedButton) {
+              await Promise.all([
+                acceptedButton.click(),
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {})
+              ]);
+            } else {
+              console.log(`[NOTICE] "Accepted" button not found, proceeding with current results.`);
+            }
+
             let hasNext = true;
             while (hasNext) {
               const candidates = await page.evaluate(() => {
